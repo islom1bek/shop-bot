@@ -464,25 +464,25 @@ async def tx():
             yield s
 
 
-async def q_all(s, sql: str, **p) -> list[dict]:
+async def q_all(s, sql: str, /, **p) -> list[dict]:
     return [dict(r) for r in (await s.execute(text(sql), p)).mappings()]
 
 
-async def q_one(s, sql: str, **p) -> dict | None:
+async def q_one(s, sql: str, /, **p) -> dict | None:
     r = (await s.execute(text(sql), p)).mappings().first()
     return dict(r) if r else None
 
 
-async def q_exec(s, sql: str, **p) -> int:
+async def q_exec(s, sql: str, /, **p) -> int:
     return (await s.execute(text(sql), p)).rowcount
 
 
-async def fetchall(sql: str, **p) -> list[dict]:
+async def fetchall(sql: str, /, **p) -> list[dict]:
     async with SF() as s:
         return await q_all(s, sql, **p)
 
 
-async def fetchone(sql: str, **p) -> dict | None:
+async def fetchone(sql: str, /, **p) -> dict | None:
     async with SF() as s:
         return await q_one(s, sql, **p)
 
@@ -1380,7 +1380,7 @@ async def _outbox_send(bot: Bot, r: dict) -> None:
     await _run_hook(r.get("hook"), True)
 
 
-async def q_exec_simple(sql: str, **p) -> int:
+async def q_exec_simple(sql: str, /, **p) -> int:
     async with tx() as s:
         return await q_exec(s, sql, **p)
 
