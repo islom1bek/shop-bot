@@ -11,6 +11,7 @@ from aiohttp import web
 import config
 from db import database as db
 from handlers import admin, user
+from services.fulfillment import recover_stuck
 from webapp.api import create_app
 
 
@@ -18,6 +19,7 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     await db.init(config.DATABASE_URL)
     bot = Bot(config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    await recover_stuck(bot)             # заказы, прерванные рестартом, не теряются
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(admin.router)      # админ первым: у него фильтр по ID
     dp.include_router(user.router)
