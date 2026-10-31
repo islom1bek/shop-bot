@@ -300,10 +300,10 @@ async def _pay_ref_percent(conn, user_id: int, amount: int, topup_id: int):
 
 
 async def referral_stats(user_id: int) -> dict:
-    earned = await pool.fetchval("SELECT COALESCE(SUM(amount),0) FROM ref_earnings WHERE referrer_id=$1", user_id)
+    earned = await pool.fetchval("SELECT COALESCE(SUM(amount),0)::bigint FROM ref_earnings WHERE referrer_id=$1", user_id)
     invited = await pool.fetchval("SELECT count(*) FROM users WHERE referrer_id=$1", user_id)
     rows = await pool.fetch(
-        "SELECT u.tg_id, u.first_name, u.username, u.created_at AS joined, COALESCE(SUM(e.amount),0) AS earned "
+        "SELECT u.tg_id, u.first_name, u.username, u.created_at AS joined, COALESCE(SUM(e.amount),0)::bigint AS earned "
         "FROM users u LEFT JOIN ref_earnings e ON e.referral_id=u.tg_id AND e.referrer_id=$1 "
         "WHERE u.referrer_id=$1 GROUP BY u.tg_id ORDER BY u.created_at DESC LIMIT 50", user_id)
     return {"invited": invited, "earned": earned, "friends": [dict(r) for r in rows]}
