@@ -7,6 +7,7 @@ import os
 import re
 import time
 from datetime import datetime
+from decimal import Decimal
 from urllib.parse import parse_qsl
 
 from aiohttp import web
@@ -22,8 +23,14 @@ DESIGN = os.path.join(HERE, "design")          # весь внешний вид 
 DESIGN_EXT = {".css", ".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".woff", ".woff2", ".ico"}
 
 
+def _default(o):
+    if isinstance(o, Decimal):
+        return int(o) if o == o.to_integral_value() else float(o)
+    return str(o)
+
+
 def ok(**data):
-    return web.json_response({"ok": True, **data})
+    return web.json_response({"ok": True, **data}, dumps=lambda o: json.dumps(o, default=_default))
 
 
 def err(code: str, message: str, status: int = 400):
