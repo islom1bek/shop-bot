@@ -30,9 +30,15 @@ Python 3.12 · Aiogram 3 · aiohttp · PostgreSQL (Neon) · Mini App (HTML/CSS/J
 ## Смена дизайна
 Весь вид Mini App — в папке `webapp/design/` (`index.html`, `style.css`, картинки). Замените файлы там и задеплойте. См. `webapp/design/README.md`.
 
+## Автовыдача
+Покупка → списание баланса (`FOR UPDATE`, COMMIT) → `fulfillment.schedule()` выдаёт товар в фоне, без кнопок админа.
+- **Premium** и **NFT-подарки** — нативно через Bot API (`giftPremiumSubscription`, `sendGift`), оплата Stars с баланса бота.
+  Для подарков привяжите gift_id: `/gifts` → `/setgift <id товара> <gift_id>`.
+- **Stars** — через HTTP-провайдера: `PROVIDER_URL`, `PROVIDER_TOKEN` (см. `.env.example`); формат запроса — `services/fulfillment.py::_http`.
+- Не выдано точно → авто-возврат. Неясный результат (таймаут/5xx/рестарт) → заказ `review`, деньги удержаны, админу алерт; решение: `/done <id>` или `/refund <id>`.
+- Состояние: `/provider`, `/review`.
+
 ## Важно
 - Цена = закупка × (1 + наценка%), округление вверх до 100 сум. Закупочные цены в `db/database.py::SEED` — примерные,
   поменяйте командой `/setbase`.
-- Выдача товара **ручная**: заказ приходит админам с кнопками «Выдан / Отклонить и вернуть». Автовыдачу
-  (Fragment/поставщик) подключайте после `db.purchase` в `webapp/api.py::buy`.
 - Баланс защищён: `SELECT ... FOR UPDATE` + `CHECK (balance >= 0)` + идемпотентные операции.
