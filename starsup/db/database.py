@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS ref_earnings(
   kind TEXT NOT NULL, topup_id BIGINT, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
 CREATE UNIQUE INDEX IF NOT EXISTS ref_earn_topup ON ref_earnings(topup_id) WHERE topup_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ref_earn_signup ON ref_earnings(referral_id) WHERE kind='signup';
+ALTER TABLE products ADD COLUMN IF NOT EXISTS qty INT;          -- Stars: кол-во, Premium: месяцы
+ALTER TABLE products ADD COLUMN IF NOT EXISTS gift_id TEXT;     -- id подарка Telegram (для sendGift)
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS provider_ref TEXT;
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS error TEXT;
 """
 
 DEFAULTS = {
@@ -89,6 +93,10 @@ async def init(dsn: str):
             for i, (cat, title, emoji, price) in enumerate(SEED):
                 await c.execute("INSERT INTO products(category,title,emoji,base_price,sort) VALUES($1,$2,$3,$4,$5)",
                                 cat, title, emoji, price, i)
+        await c.execute("UPDATE products SET qty = substring(title from '^([0-9]+) Stars')::int "
+                        "WHERE qty IS NULL AND category='stars'")
+        await c.execute("UPDATE products SET qty = substring(title from '([0-9]+) мес')::int "
+                        "WHERE qty IS NULL AND category='premium'")
 
 
 # ---------- настройки ----------
@@ -234,20 +242,43 @@ async def purchase(user_id: int, product_id: int, recipient: str):
         return dict(order), bal
 
 
-async def order_action(order_id: int, action: str):
-    """action: 'done' — выдан; 'refund' — отклонить и вернуть деньги."""
+async def order_action(order_id: int, action: str, allowed=("processing",), ref=None, error=None):
+    """action: 'done' — выдан; 'refund' — вернуть деньги; 'review' — на ручную проверку."""
     async with pool.acquire() as conn, conn.transaction():
         o = await conn.fetchrow("SELECT * FROM orders WHERE id=$1 FOR UPDATE", order_id)
         if not o:
             raise BotError("not_found", "Заказ не найден")
-        if o["status"] != "processing":
+        if o["status"] not in allowed:
             raise BotError("done", f"Заказ уже в статусе «{o['status']}»")
-        if action == "done":
-            await conn.execute("UPDATE orders SET status='done', updated_at=now() WHERE id=$1", order_id)
-        else:
-            await conn.execute("UPDATE orders SET status='refunded', updated_at=now() WHERE id=$1", order_id)
+        new = {"done": "done", "refund": "refunded", "review": "review"}[action]
+        await conn.execute("UPDATE orders SET status=$2, provider_ref=COALESCE($3, provider_ref), error=$4, "
+                           "updated_at=now() WHERE id=$1", order_id, new, ref, error)
+        if action == "refund":
             await _apply(conn, o["user_id"], o["price"], "refund", f"order:{order_id}")
         return dict(o)
+
+
+async def claim_order(order_id: int):
+    """Атомарно забрать заказ в выдачу (processing -> delivering). Второй вызов получит None."""
+    r = await pool.fetchrow("UPDATE orders SET status='delivering', updated_at=now() "
+                            "WHERE id=$1 AND status='processing' RETURNING *", order_id)
+    return dict(r) if r else None
+
+
+async def stuck_orders() -> list:
+    rows = await pool.fetch("SELECT id, status FROM orders WHERE status IN ('processing','delivering') "
+                            "AND updated_at < now() - interval '60 seconds' ORDER BY id")
+    return [dict(r) for r in rows]
+
+
+async def get_product(product_id: int):
+    r = await pool.fetchrow("SELECT * FROM products WHERE id=$1 AND active", product_id)
+    return dict(r) if r else None
+
+
+async def get_user(user_id: int):
+    r = await pool.fetchrow("SELECT * FROM users WHERE tg_id=$1", user_id)
+    return dict(r) if r else None
 
 
 # ======================= РЕФЕРАЛЫ / КАНАЛЫ / РАССЫЛКА =======================
