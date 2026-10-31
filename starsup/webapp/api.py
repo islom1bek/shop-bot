@@ -14,6 +14,7 @@ from aiohttp import web
 
 import config
 from db import database as db
+from services import fulfillment
 from services.notify import notify_admins, notify_user, order_kb
 from services.subscription import missing_channels
 from services.payments import parse_amount
@@ -187,15 +188,17 @@ async def topup_status(request):
 async def buy(request):
     u = await current_user(request)
     body = await request.json()
-    recipient = str(body.get("recipient") or u.get("username") or "").strip().lstrip("@")
-    if not re.fullmatch(r"[A-Za-z0-9_]{4,32}", recipient):
-        return err("bad_recipient", "Укажите @username получателя (латиница, цифры, _)")
-    order, balance = await db.purchase(u["id"], int(body.get("product_id", 0)), recipient)
-    await notify_admins(
-        request.app["bot"],
-        f"🛒 <b>Новый заказ #{order['id']}</b>\n{order['title']} — {order['price']:,} сум\n"
-        f"Покупатель: {u['id']} (@{u.get('username') or '—'})\nПолучатель: @{recipient}".replace(",", " "),
-        order_kb(order["id"]))
+    try:
+        product = await db.get_product(int(body.get("product_id", 0)))
+    except (TypeError, ValueError):
+        return err("bad_request", "Некорректный товар")
+    if not product:
+        return err("not_found", "Товар не найден")
+    user = await db.get_user(u["id"])
+    await fulfillment.preflight(product, user)          # ДО списания: если выдать нечем — деньги не трогаем
+    recipient = user.get("username") or str(u["id"])    # выдача — на аккаунт покупателя
+    order, balance = await db.purchase(u["id"], product["id"], recipient)   # списание (FOR UPDATE) + COMMIT
+    fulfillment.schedule(request.app["bot"], order["id"])                   # сразу после списания — выдача по API
     return ok(order=clean(order), balance=balance)
 
 
