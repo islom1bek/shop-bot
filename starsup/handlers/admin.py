@@ -13,6 +13,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton as B, InlineKeyboa
 
 import config
 from db import database as db
+from services import fulfillment
 from services.notify import notify_user
 from services.subscription import reset_cache
 
@@ -31,7 +32,7 @@ EDITABLE = {
 }
 TOGGLES = {"enabled_stars": "⭐ Stars", "enabled_premium": "💎 Premium", "enabled_gifts": "🎁 NFT-подарки",
            "pay_uzcard": "💳 Оплата Uzcard", "pay_humo": "💳 Оплата Humo"}
-ORDER_ST = {"processing": "⏳ в работе", "done": "✅ выдан", "refunded": "↩️ возврат"}
+ORDER_ST = {"processing": "⏳ в очереди", "delivering": "📤 выдаётся", "done": "✅ выдан", "refunded": "↩️ возврат", "review": "🔎 проверка"}
 TOPUP_ST = {"pending": "⏳ ожидает", "paid": "✅ зачислено", "expired": "⌛ истёк", "rejected": "❌ отклонён"}
 
 
@@ -83,7 +84,7 @@ async def menu(cb: CallbackQuery, state: FSMContext):
 async def help_(cb: CallbackQuery):
     await show(cb, "<b>Команды</b>\n/credit &lt;tg_id&gt; &lt;сумма&gt; — начислить (отрицательная — списать)\n"
                    "/user &lt;tg_id&gt; — карточка пользователя, его платежи и заказы\n"
-                   "/products — товары и закупочные цены\n/setbase &lt;id&gt; &lt;цена&gt; — закупочная цена товара",
+                   "/products — товары и закупочные цены\n/setbase &lt;id&gt; &lt;цена&gt; — закупочная цена товара\n/gifts — подарки Telegram (gift_id)\n/setgift &lt;id товара&gt; &lt;gift_id&gt;\n/provider — состояние автовыдачи\n/review — заказы на проверке\n/done &lt;id&gt; · /refund &lt;id&gt; — решить зависший заказ",
                KB(inline_keyboard=[back()]))
     await cb.answer()
 
@@ -181,9 +182,6 @@ async def orders_view():
     for o in rows:
         lines.append(f"#{o['id']} · {e(o['title'])} · {n(o['price'])} сум · user <code>{o['user_id']}</code> "
                      f"→ @{e(o['recipient'])} · {ORDER_ST.get(o['status'], o['status'])}")
-        if o["status"] == "processing":
-            kb.append([B(text=f"✅ #{o['id']} выдан", callback_data=f"ord:done:{o['id']}"),
-                       B(text=f"❌ #{o['id']} вернуть", callback_data=f"ord:refund:{o['id']}")])
     return "📦 <b>Последние заказы</b>\n\n" + ("\n".join(lines) or "Пока пусто"), KB(inline_keyboard=kb + [back()])
 
 
@@ -191,25 +189,6 @@ async def orders_view():
 async def orders(cb: CallbackQuery):
     await show(cb, *await orders_view())
     await cb.answer()
-
-
-@router.callback_query(F.data.regexp(r"^ordn?:(done|refund):\d+$"))
-async def order_act(cb: CallbackQuery, bot: Bot):
-    pref, act, oid = cb.data.split(":")
-    try:
-        o = await db.order_action(int(oid), act)
-    except db.BotError as ex:
-        return await cb.answer(ex.message, show_alert=True)
-    if act == "done":
-        await notify_user(bot, o["user_id"], f"✅ Заказ #{oid} ({o['title']}) выполнен. Спасибо за покупку!")
-    else:
-        await notify_user(bot, o["user_id"], f"↩️ Заказ #{oid} отклонён, {n(o['price'])} сум возвращены на баланс.")
-    await cb.answer("Готово")
-    if pref == "ordn":
-        await show(cb, cb.message.html_text + f"\n\n{'✅ Выдан' if act == 'done' else '↩️ Отклонён, деньги возвращены'}",
-                   KB(inline_keyboard=[]))
-    else:
-        await show(cb, *await orders_view())
 
 
 # ---------- пополнения ----------
@@ -439,3 +418,68 @@ async def ch_del(cb: CallbackQuery):
     reset_cache()
     await show(cb, *await channels_view())
     await cb.answer("Удалено")
+
+
+# ======================= АВТОВЫДАЧА: служебные команды (только для нештатных ситуаций) =======================
+@router.message(Command("provider"))
+async def provider_status(m: Message):
+    kind, data = await fulfillment.tg_call("getMyStarBalance")
+    bal = data.get("amount") if kind == "ok" and isinstance(data, dict) else f"недоступно ({e(data)})"
+    rows = await db.pool.fetch("SELECT status, count(*) c FROM orders GROUP BY status")
+    st = ", ".join(f"{r['status']}: {r['c']}" for r in rows) or "—"
+    prov = "настроен" if config.PROVIDER_URL and config.PROVIDER_TOKEN else "❌ не настроен"
+    await m.answer(f"⚙️ <b>Автовыдача</b>\nStars на балансе бота: <b>{bal}</b>\nHTTP-провайдер (Stars): {prov}\n"
+                   f"Premium: {config.PREMIUM_MODE}\nЗаказы: {st}")
+
+
+@router.message(Command("gifts"))
+async def gifts(m: Message):
+    kind, data = await fulfillment.tg_call("getAvailableGifts")
+    if kind != "ok":
+        return await m.answer(f"⚠️ {e(data)}")
+    lines = [f"<code>{g['id']}</code> · {g.get('star_count')}⭐ {e((g.get('sticker') or {}).get('emoji'))}"
+             for g in data.get("gifts", [])[:40]]
+    await m.answer("🎁 <b>Подарки Telegram</b> (gift_id · цена)\n" + "\n".join(lines) +
+                   "\n\nПривязать к товару: /setgift &lt;id товара&gt; &lt;gift_id&gt;")
+
+
+@router.message(Command("setgift"))
+async def setgift(m: Message, command: CommandObject):
+    a = (command.args or "").split()
+    if len(a) != 2 or not a[0].isdigit():
+        return await m.answer("Использование: /setgift &lt;id товара&gt; &lt;gift_id&gt;  (id — из /products, gift_id — из /gifts)")
+    r = await db.pool.execute("UPDATE products SET gift_id=$2 WHERE id=$1 AND category='gifts'", int(a[0]), a[1])
+    await m.answer("✅ Привязано" if r.endswith("1") else "Товар не найден или это не подарок")
+
+
+@router.message(Command("review"))
+async def review(m: Message):
+    rows = await db.pool.fetch("SELECT * FROM orders WHERE status IN ('review','delivering') ORDER BY id DESC LIMIT 20")
+    await m.answer("🔎 <b>Заказы на проверке</b>\n" + ("\n".join(
+        f"#{o['id']} · {e(o['title'])} · {n(o['price'])} сум · user <code>{o['user_id']}</code> · {o['status']}\n   {e(o['error'])}"
+        for o in rows) or "Нет") + "\n\n/done &lt;id&gt; — выдано · /refund &lt;id&gt; — вернуть деньги")
+
+
+async def _settle(m: Message, command: CommandObject, bot: Bot, action: str):
+    arg = (command.args or "").strip()
+    if not arg.isdigit():
+        return await m.answer("Укажите номер заказа, например /refund 15")
+    try:
+        o = await db.order_action(int(arg), action, allowed=("review", "processing"))
+    except db.BotError as ex:
+        return await m.answer(f"⚠️ {ex.message}")
+    if action == "done":
+        await notify_user(bot, o["user_id"], f"✅ Заказ #{arg} ({o['title']}) выдан. Спасибо за покупку!")
+    else:
+        await notify_user(bot, o["user_id"], f"↩️ Заказ #{arg} отклонён, {n(o['price'])} сум возвращены на баланс.")
+    await m.answer("✅ Готово")
+
+
+@router.message(Command("done"))
+async def done_cmd(m: Message, command: CommandObject, bot: Bot):
+    await _settle(m, command, bot, "done")
+
+
+@router.message(Command("refund"))
+async def refund_cmd(m: Message, command: CommandObject, bot: Bot):
+    await _settle(m, command, bot, "refund")
