@@ -1,0 +1,26 @@
+services:
+  bot:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    expose: ["8080"]
+
+  caddy:            # HTTPS для Mini App (сертификат Let's Encrypt автоматически)
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment: [DOMAIN]
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy_data:/data"]
+    depends_on: [bot]
+
+  listener:         # парсер @CardXabarBot (запускается отдельно: --profile listener)
+    build: .
+    command: python parser/cardxabar_listener.py
+    env_file: .env
+    restart: unless-stopped
+    profiles: ["listener"]
+    volumes: ["./session:/app/session"]
+    depends_on: [bot]
+
+volumes:
+  caddy_data:
