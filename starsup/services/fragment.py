@@ -160,7 +160,7 @@ async def check_session(username: str = "") -> str:
             async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
                 found = await _api(s, "searchStarsRecipient", query=u, quantity=50)
                 lines.append(f"тест: поиск @{u}: найден ✅")
-                init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=50)
+                init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=50, payment_method="ton")
                 lines.append(f"тест: initBuyStarsRequest: ✅ req_id={init.get('req_id')}")
                 tx = await _api(s, "getBuyStarsLink", id=init["req_id"], show_sender=0, transaction=1,
                                 account=json.dumps(await _account()), device=json.dumps(DEVICE))
@@ -204,7 +204,7 @@ async def _prepare(kind: str, username: str, qty: int) -> tuple[str, dict]:
     async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
         if kind == "stars":
             found = await _api(s, "searchStarsRecipient", query=username, quantity=qty)
-            init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=qty)
+            init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=qty, payment_method="ton")
             link = "getBuyStarsLink"
         else:
             found = await _api(s, "searchPremiumGiftRecipient", query=username, months=qty)
