@@ -96,9 +96,10 @@ _HASH_RE = re.compile(r'api\?hash=([0-9a-fA-F]{8,})')
 async def refresh_hash():
     """Берёт актуальный hash прямо со страницы Fragment. -> (hash|None, html, status)"""
     global _hash
-    async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
+    hdrs = {k: v for k, v in _headers().items() if k != "X-Requested-With"}   # с ним Fragment отдаёт JSON, а не страницу
+    async with aiohttp.ClientSession(timeout=TIMEOUT, headers=hdrs) as s:
         async with s.get("https://fragment.com/stars/buy") as r:
-            html = await r.text()
+            html = (await r.text()).replace("\\/", "/")
             status = r.status
     m = _HASH_RE.search(html)
     if m:
