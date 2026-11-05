@@ -133,8 +133,8 @@ async def refresh_hash():
     return (m.group(1) if m else None), html, status
 
 
-async def check_session() -> str:
-    """Диагностика для /fragment_check: ничего не покупает."""
+async def check_session(username: str = "") -> str:
+    """Диагностика для /fragment_check [@username]: TON не отправляет, только создаёт заявку на Fragment."""
     lines = []
     names = [c.split("=")[0].strip() for c in config.FRAGMENT_COOKIES.split(";") if "=" in c]
     lines.append("cookies в .env: " + (", ".join(names) or "ПУСТО"))
@@ -151,6 +151,23 @@ async def check_session() -> str:
     if not page_hash:
         i = html.find("apiUrl")
         lines.append("фрагмент HTML: " + (html[max(0, i - 20):i + 120] if i >= 0 else html[:250]).replace("\n", " "))
+    low = html.lower()
+    lines.append("подсказки в HTML: " + ", ".join(f"'{k}'={'есть' if k in low else 'нет'}"
+                 for k in ("connect ton", "connect wallet", "log in", "log out", "disconnect")))
+    if username:
+        u = username.lstrip("@")
+        try:
+            async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
+                found = await _api(s, "searchStarsRecipient", query=u, quantity=50)
+                lines.append(f"тест: поиск @{u}: найден ✅")
+                init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=50)
+                lines.append(f"тест: initBuyStarsRequest: ✅ req_id={init.get('req_id')}")
+                tx = await _api(s, "getBuyStarsLink", id=init["req_id"], show_sender=0, transaction=1,
+                                account=json.dumps(await _account()), device=json.dumps(DEVICE))
+                m0 = ((tx.get("transaction") or {}).get("messages") or [{}])[0]
+                lines.append(f"тест: getBuyStarsLink: ✅ сумма {int(m0.get('amount', 0)) / 1e9:.3f} TON (НЕ отправлено)")
+        except Exception as ex:
+            lines.append(f"тест: ❌ {ex}")
     for h in ({page_hash, config.FRAGMENT_HASH} - {None, ""}):
         try:
             async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
