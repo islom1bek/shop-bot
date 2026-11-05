@@ -529,6 +529,16 @@ async def fragment_status(m: Message):
                    f"Stars: {config.STARS_MODE} · Premium: {config.PREMIUM_MODE}\nЛимит на заказ: {config.FRAGMENT_MAX_TON} TON")
 
 
+@router.message(Command("fragment_check"))
+async def fragment_check(m: Message):
+    if not fragment.configured():
+        return await m.answer("❌ Fragment не настроен")
+    try:
+        await m.answer("<pre>" + e(await fragment.check_session()) + "</pre>")
+    except Exception as ex:
+        await m.answer(f"⚠️ {e(ex)}")
+
+
 @router.message(Command("gifts"))
 async def gifts(m: Message):
     kind, data = await fulfillment.tg_call("getAvailableGifts")
