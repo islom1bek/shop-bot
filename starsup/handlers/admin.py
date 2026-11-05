@@ -530,11 +530,11 @@ async def fragment_status(m: Message):
 
 
 @router.message(Command("fragment_check"))
-async def fragment_check(m: Message):
+async def fragment_check(m: Message, command: CommandObject):
     if not fragment.configured():
         return await m.answer("❌ Fragment не настроен")
     try:
-        await m.answer("<pre>" + e(await fragment.check_session()) + "</pre>")
+        await m.answer("<pre>" + e(await fragment.check_session((command.args or "").strip())) + "</pre>")
     except Exception as ex:
         await m.answer(f"⚠️ {e(ex)}")
 
