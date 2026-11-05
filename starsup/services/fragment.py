@@ -53,10 +53,36 @@ async def _get_wallet():
     return _wallet
 
 
+async def _reset_wallet():
+    """Сброс подключения к TON (liteserver мог рассинхронизироваться) — следующий вызов подключится заново."""
+    global _wallet, _provider
+    try:
+        if _provider is not None:
+            await _provider.close_all()
+    except Exception:
+        pass
+    _wallet = _provider = None
+
+
+async def _balance() -> int:
+    """Баланс кошелька в нанотонах; при сбое liteserver переподключается и повторяет (до 4 раз)."""
+    last = None
+    for _ in range(4):
+        try:
+            w = await _get_wallet()
+            return await w.get_balance()
+        except Exception as ex:
+            last = ex
+            logging.warning("TON balance error, переподключаюсь: %s", ex)
+            await _reset_wallet()
+            await asyncio.sleep(1)
+    raise last
+
+
 async def wallet_info() -> dict:
     """Адрес и баланс TON для /fragment в админке."""
+    bal = await _balance()
     w = await _get_wallet()
-    bal = await w.get_balance()
     return {"address": w.address.to_str(is_user_friendly=True, is_bounceable=False), "ton": bal / 1e9}
 
 
@@ -133,8 +159,9 @@ async def check_session() -> str:
         except Exception as ex:
             lines.append(f"поиск с hash {h}: {ex}")
     try:
+        bal = await _balance()
         w = await _get_wallet()
-        lines.append("Кошелёк (raw): " + w.address.to_str(is_user_friendly=False))
+        lines.append(f"Кошелёк (raw): {w.address.to_str(is_user_friendly=False)}, баланс {bal / 1e9:.3f} TON")
     except Exception as ex:
         lines.append(f"кошелёк: ошибка {ex}")
     return "\n".join(lines)
@@ -178,6 +205,7 @@ async def _prepare(kind: str, username: str, qty: int) -> tuple[str, dict]:
 async def _pay(msg: dict):
     """Отправка TON. После успешной отправки считаем, что деньги ушли."""
     from pytoniq import Address, Cell
+    await _balance()                       # прогрев/переподключение к живому liteserver перед отправкой
     w = await _get_wallet()
     body = Cell.one_from_boc(base64.b64decode(msg["payload"] + "=" * (-len(msg["payload"]) % 4)))
     await w.transfer(destination=Address(msg["address"]), amount=int(msg["amount"]), body=body)
@@ -193,8 +221,7 @@ async def buy(kind: str, username: str, qty: int, order_id: int):
             ton_cost = int(msg["amount"]) / 1e9
             if ton_cost > config.FRAGMENT_MAX_TON:                  # защита от аномально дорогого заказа
                 return "fail", f"стоимость {ton_cost:.2f} TON выше лимита FRAGMENT_MAX_TON"
-            w = await _get_wallet()
-            if await w.get_balance() < int(msg["amount"]) + 50_000_000:     # +0.05 TON на комиссию
+            if await _balance() < int(msg["amount"]) + 50_000_000:     # +0.05 TON на комиссию
                 return "fail", f"не хватает TON на кошельке (нужно ≈{ton_cost:.2f})"
         except FragmentAuthError as ex:
             return "fail", f"сессия Fragment недействительна — обновите cookies/hash ({ex})"
