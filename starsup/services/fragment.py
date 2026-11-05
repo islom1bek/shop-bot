@@ -70,18 +70,49 @@ async def _account() -> dict:
 async def _api(session: aiohttp.ClientSession, method: str, **data) -> dict:
     async with session.post(f"{API}?hash={config.FRAGMENT_HASH}", data={"method": method, **data}) as r:
         if r.status in (401, 403):
-            raise FragmentAuthError(f"Fragment вернул {r.status}")
+            raise FragmentAuthError(f"{method}: Fragment вернул {r.status}")
         if r.status >= 500:
-            raise aiohttp.ClientError(f"Fragment {r.status}")
-        j = await r.json(content_type=None)
+            raise aiohttp.ClientError(f"{method}: Fragment {r.status}")
+        raw = await r.text()
+    try:
+        j = json.loads(raw)
+    except ValueError:
+        raise FragmentFail(f"{method}: Fragment вернул не JSON (HTTP {r.status}): {raw[:150]!r}")
     if not isinstance(j, dict):
-        raise aiohttp.ClientError("странный ответ Fragment")
+        raise aiohttp.ClientError(f"{method}: странный ответ Fragment")
     if j.get("error"):
         err = str(j["error"])
+        logging.warning("fragment %s -> error=%r, полный ответ: %s", method, err, raw[:500])
         if "auth" in err.lower() or "login" in err.lower() or "session" in err.lower():
-            raise FragmentAuthError(err)
-        raise FragmentFail(err)
+            raise FragmentAuthError(f"{method}: {err}")
+        raise FragmentFail(f"{method}: {err}")
     return j
+
+
+async def check_session() -> str:
+    """Диагностика для /fragment: авторизована ли сессия и подходит ли hash. Ничего не покупает."""
+    lines = []
+    async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
+        async with s.get("https://fragment.com/stars/buy") as r:
+            html = await r.text()
+            lines.append(f"Страница stars/buy: HTTP {r.status}")
+    m = re.search(r'"apiUrl"\s*:\s*"\\?/api\?hash=([0-9a-f]+)"', html)
+    page_hash = m.group(1) if m else None
+    lines.append(f"unauth на странице: {'ДА ❌ (cookies не авторизованы)' if '\"unauth\":true' in html else 'нет ✅'}")
+    lines.append(f"hash на странице: {page_hash or 'не найден'}")
+    lines.append(f"hash в .env: {config.FRAGMENT_HASH} → {'совпадает ✅' if page_hash == config.FRAGMENT_HASH else 'НЕ совпадает ❌'}")
+    try:
+        async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
+            j = await _api(s, "searchStarsRecipient", query="durov", quantity=50)
+        lines.append(f"searchStarsRecipient: ok={bool(j.get('found'))}")
+    except Exception as ex:
+        lines.append(f"searchStarsRecipient: ошибка {ex}")
+    try:
+        w = await _get_wallet()
+        lines.append("Кошелёк (raw): " + w.address.to_str(is_user_friendly=False))
+    except Exception as ex:
+        lines.append(f"кошелёк: ошибка {ex}")
+    return "\n".join(lines)
 
 
 def _headers() -> dict:
