@@ -27,6 +27,7 @@ DEVICE = {"platform": "web", "appName": "tonkeeper", "appVersion": "3.0.0", "max
 _wallet_lock = asyncio.Lock()       # TON-кошелёк шлёт транзакции строго по одной (seqno)
 _wallet = None
 _provider = None
+_hash = None                        # hash, найденный на странице Fragment (приоритетнее .env)
 
 
 class FragmentAuthError(Exception):
@@ -68,7 +69,7 @@ async def _account() -> dict:
 
 # ------------------------------------------------------------------ Fragment web API
 async def _api(session: aiohttp.ClientSession, method: str, **data) -> dict:
-    async with session.post(f"{API}?hash={config.FRAGMENT_HASH}", data={"method": method, **data}) as r:
+    async with session.post(f"{API}?hash={_hash or config.FRAGMENT_HASH}", data={"method": method, **data}) as r:
         if r.status in (401, 403):
             raise FragmentAuthError(f"{method}: Fragment вернул {r.status}")
         if r.status >= 500:
@@ -89,24 +90,47 @@ async def _api(session: aiohttp.ClientSession, method: str, **data) -> dict:
     return j
 
 
-async def check_session() -> str:
-    """Диагностика для /fragment: авторизована ли сессия и подходит ли hash. Ничего не покупает."""
-    lines = []
+_HASH_RE = re.compile(r'api\?hash=([0-9a-fA-F]{8,})')
+
+
+async def refresh_hash():
+    """Берёт актуальный hash прямо со страницы Fragment. -> (hash|None, html, status)"""
+    global _hash
     async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
         async with s.get("https://fragment.com/stars/buy") as r:
             html = await r.text()
-            lines.append(f"Страница stars/buy: HTTP {r.status}")
-    m = re.search(r'"apiUrl"\s*:\s*"\\?/api\?hash=([0-9a-f]+)"', html)
-    page_hash = m.group(1) if m else None
-    lines.append(f"unauth на странице: {'ДА ❌ (cookies не авторизованы)' if '\"unauth\":true' in html else 'нет ✅'}")
-    lines.append(f"hash на странице: {page_hash or 'не найден'}")
-    lines.append(f"hash в .env: {config.FRAGMENT_HASH} → {'совпадает ✅' if page_hash == config.FRAGMENT_HASH else 'НЕ совпадает ❌'}")
-    try:
-        async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
-            j = await _api(s, "searchStarsRecipient", query="durov", quantity=50)
-        lines.append(f"searchStarsRecipient: ok={bool(j.get('found'))}")
-    except Exception as ex:
-        lines.append(f"searchStarsRecipient: ошибка {ex}")
+            status = r.status
+    m = _HASH_RE.search(html)
+    if m:
+        _hash = m.group(1)
+    return (m.group(1) if m else None), html, status
+
+
+async def check_session() -> str:
+    """Диагностика для /fragment_check: ничего не покупает."""
+    lines = []
+    names = [c.split("=")[0].strip() for c in config.FRAGMENT_COOKIES.split(";") if "=" in c]
+    lines.append("cookies в .env: " + (", ".join(names) or "ПУСТО"))
+    for need in ("stel_ssid", "stel_token", "stel_dt", "stel_ton_token"):
+        if need not in names:
+            lines.append(f"  нет cookie {need} ❌")
+    page_hash, html, status = await refresh_hash()
+    lines.append(f"stars/buy: HTTP {status}, {len(html)} байт")
+    t = re.search(r"<title>(.*?)</title>", html, re.S)
+    lines.append(f"title: {t.group(1).strip()[:80] if t else '—'}")
+    lines.append(f"ajInit на странице: {'да' if 'ajInit' in html else 'НЕТ ❌'}")
+    lines.append(f"unauth:true: {'ДА ❌' if re.search(r'unauth.{0,4}true', html) else 'нет'}")
+    lines.append(f"hash со страницы: {page_hash or 'не найден ❌'}; в .env: {config.FRAGMENT_HASH}")
+    if not page_hash:
+        i = html.find("apiUrl")
+        lines.append("фрагмент HTML: " + (html[max(0, i - 20):i + 120] if i >= 0 else html[:250]).replace("\n", " "))
+    for h in ({page_hash, config.FRAGMENT_HASH} - {None, ""}):
+        try:
+            async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
+                async with s.post(f"{API}?hash={h}", data={"method": "searchStarsRecipient", "query": "durov", "quantity": 50}) as r:
+                    lines.append(f"поиск с hash {h}: HTTP {r.status} {(await r.text())[:150]}")
+        except Exception as ex:
+            lines.append(f"поиск с hash {h}: {ex}")
     try:
         w = await _get_wallet()
         lines.append("Кошелёк (raw): " + w.address.to_str(is_user_friendly=False))
@@ -127,6 +151,11 @@ async def _prepare(kind: str, username: str, qty: int) -> tuple[str, dict]:
     if not re.fullmatch(r"[A-Za-z0-9_]{4,32}", username):
         raise FragmentFail("у клиента нет корректного @username")
     account = await _account()
+    if _hash is None:
+        try:
+            await refresh_hash()
+        except Exception:
+            logging.exception("не удалось получить hash со страницы")
     async with aiohttp.ClientSession(timeout=TIMEOUT, headers=_headers()) as s:
         if kind == "stars":
             found = await _api(s, "searchStarsRecipient", query=username, quantity=qty)
