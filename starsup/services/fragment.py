@@ -161,6 +161,9 @@ async def check_session(username: str = "") -> str:
                 found = await _api(s, "searchStarsRecipient", query=u, quantity=50)
                 lines.append(f"тест: поиск @{u}: найден ✅")
                 init = await _api(s, "initBuyStarsRequest", recipient=found["found"]["recipient"], quantity=50, payment_method="ton")
+                if not init.get("req_id"):
+                    lines.append(f"тест: initBuyStarsRequest вернул БЕЗ req_id: {json.dumps(init, ensure_ascii=False)[:600]}")
+                    raise FragmentFail("нет req_id в ответе")
                 lines.append(f"тест: initBuyStarsRequest: ✅ req_id={init.get('req_id')}")
                 tx = await _api(s, "getBuyStarsLink", id=init["req_id"], show_sender=0, transaction=1,
                                 account=json.dumps(await _account()), device=json.dumps(DEVICE))
@@ -210,6 +213,8 @@ async def _prepare(kind: str, username: str, qty: int) -> tuple[str, dict]:
             found = await _api(s, "searchPremiumGiftRecipient", query=username, months=qty)
             init = await _api(s, "initGiftPremiumRequest", recipient=found["found"]["recipient"], months=qty)
             link = "getGiftPremiumLink"
+        if not init.get("req_id"):
+            raise FragmentFail(f"нет req_id, ответ Fragment: {json.dumps(init, ensure_ascii=False)[:400]}")
         req_id = init["req_id"]
         tx = await _api(s, link, id=req_id, show_sender=0, transaction=1,
                         account=json.dumps(account), device=json.dumps(DEVICE))
